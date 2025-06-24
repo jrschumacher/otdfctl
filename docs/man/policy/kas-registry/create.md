@@ -17,7 +17,6 @@ command:
     - name: public-key-remote
       shorthand: r
       description: Remote URI where the public key can be retrieved for the KAS
-    - name: label
     - name: name
       shorthand: n
       description: Optional name of the registered KAS (must be unique within Policy)
