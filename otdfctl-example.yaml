@@ -1,3 +1,15 @@
 output:
   # acceptable formats: json or styled
   format: styled
+
+llm:
+  # default model path (can be overridden with --model-path flag)
+  default_model_path: ""
+  # default context size for models
+  context_size: 4096
+  # default temperature (0.0-1.0, higher = more creative)
+  temperature: 0.7
+  # enable streaming by default
+  stream: true
+  # custom system prompt (empty = use default OpenTDF prompt)
+  system_prompt: ""

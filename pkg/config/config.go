@@ -33,8 +33,17 @@ type Output struct {
 	Format string `yaml:"format" default:"styled"`
 }
 
+type LLM struct {
+	DefaultModelPath string  `yaml:"default_model_path" default:""`
+	ContextSize      int     `yaml:"context_size" default:"4096"`
+	Temperature      float64 `yaml:"temperature" default:"0.7"`
+	Stream           bool    `yaml:"stream" default:"true"`
+	SystemPrompt     string  `yaml:"system_prompt" default:""`
+}
+
 type Config struct {
 	Output Output `yaml:"output"`
+	LLM    LLM    `yaml:"llm"`
 }
 
 // captures all CLI flags that will override pre-specified config values
