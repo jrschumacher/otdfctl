@@ -55,7 +55,7 @@ func (sce *SimpleChatEngine) Start() error {
 	
 	// Set up model parameters
 	modelParams := llama.ModelParams{
-		NumGpuLayers: 0,
+		NumGpuLayers: -1, // Use all available GPU layers
 		UseMmap:      true,
 		VocabOnly:    false,
 	}
