@@ -170,20 +170,42 @@ func startSimpleInteractiveChat(c *cli.Cli, engine *llm.SimpleChatEngine, system
 		c.Printf("🤖 ")
 		
 		start := time.Now()
-		response := engine.Chat(messages)
+		var fullResponse strings.Builder
 		
-		if response.Error != nil {
-			c.Printf("\nError: %v\n", response.Error)
-			continue
+		if stream {
+			// Use streaming inference
+			response := engine.ChatStream(messages, func(token string) {
+				c.Printf("%s", token)
+				os.Stdout.Sync() // Force flush for real-time streaming
+				fullResponse.WriteString(token)
+			})
+			
+			if response.Error != nil {
+				c.Printf("\nError: %v\n", response.Error)
+				continue
+			}
+			
+			c.Printf("\n\n⏱️  Response time: %v\n", time.Since(start))
+		} else {
+			// Use non-streaming inference
+			response := engine.Chat(messages)
+			
+			if response.Error != nil {
+				c.Printf("\nError: %v\n", response.Error)
+				continue
+			}
+			
+			c.Printf("%s\n\n⏱️  Response time: %v\n", response.Content, time.Since(start))
+			fullResponse.WriteString(response.Content)
 		}
 		
-		c.Printf("%s\n\n⏱️  Response time: %v\n", response.Content, time.Since(start))
-		
 		// Add assistant response to history
-		messages = append(messages, llm.ChatMessage{
-			Role:    "assistant",
-			Content: response.Content,
-		})
+		if fullResponse.Len() > 0 {
+			messages = append(messages, llm.ChatMessage{
+				Role:    "assistant",
+				Content: fullResponse.String(),
+			})
+		}
 	}
 	
 	return nil
