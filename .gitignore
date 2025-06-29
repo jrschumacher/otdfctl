@@ -3,6 +3,7 @@ bin/.DS_Store
 target/
 .vscode/launch.json
 otdfctl.yaml
+/docs-main
 
 # Ignore the binaries
 otdfctl

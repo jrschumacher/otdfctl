@@ -63,8 +63,8 @@ func (h *Handler) Close() {
 	}
 }
 
-// StartChat initializes and starts an interactive chat session
-func (h *Handler) StartChat(modelPath string, stream bool, contextSize int, temperature float64, systemPrompt string) error {
+// StartChatWithRAG initializes and starts an interactive chat session with optional RAG support
+func (h *Handler) StartChatWithRAG(modelPath string, stream bool, contextSize int, temperature float64, systemPrompt string, enableRAG bool, indexPath string, embeddingModelPath string) error {
 	// Use config defaults if values not provided via flags
 	if modelPath == "" && h.config != nil {
 		modelPath = h.config.LLM.DefaultModelPath
@@ -87,6 +87,25 @@ func (h *Handler) StartChat(modelPath string, stream bool, contextSize int, temp
 	}
 	
 	h.engine = NewChatEngine(modelPath)
+	
+	// Enable RAG if requested
+	if enableRAG {
+		h.printFunc("🔧 Initializing Simple RAG support...\n")
+		
+		// Load simple RAG store
+		simpleStore := NewSimpleRAGStore(strings.Replace(indexPath, "rag_index.json", "simple_rag_index.json", 1))
+		if err := simpleStore.LoadIndex(); err != nil {
+			return fmt.Errorf("failed to load simple RAG index: %w", err)
+		}
+		
+		if simpleStore.GetDocumentCount() == 0 {
+			h.printFunc("⚠️  Warning: No documents found in simple RAG index. Run 'otdfctl llm ingest-simple' first.\n")
+		} else {
+			// Enable simple RAG on the chat engine
+			h.engine.EnableSimpleRAG(simpleStore)
+			h.printFunc("✅ Simple RAG enabled with %d documents\n", simpleStore.GetDocumentCount())
+		}
+	}
 	
 	if err := h.engine.Start(); err != nil {
 		return fmt.Errorf("failed to start chat engine: %w", err)
@@ -195,6 +214,11 @@ func (h *Handler) StartChat(modelPath string, stream bool, contextSize int, temp
 	}
 	
 	return nil
+}
+
+// StartChat initializes and starts an interactive chat session (backward compatibility)
+func (h *Handler) StartChat(modelPath string, stream bool, contextSize int, temperature float64, systemPrompt string) error {
+	return h.StartChatWithRAG(modelPath, stream, contextSize, temperature, systemPrompt, false, "", "")
 }
 
 // getDefaultSystemPrompt returns the default OpenTDF-focused system prompt

@@ -28,6 +28,9 @@ otdfctl llm chat <model-path> [flags]
 - `--context-size` - Maximum context window size for the model (default: 4096)  
 - `--temperature` - Sampling temperature from 0.0-1.0, higher values are more creative (default: 0.7)
 - `--system-prompt` - Override the default OpenTDF system prompt with custom context
+- `--rag` - Enable RAG (Retrieval-Augmented Generation) for context-aware responses
+- `--index-path` - Path to RAG vector index (default: ~/.otdfctl/rag_index.json)
+- `--embedding-model` - Path to embedding model for RAG (default: same as chat model)
 
 ## Interactive Commands
 
@@ -53,6 +56,16 @@ otdfctl llm chat /models/llama2.gguf --temperature 0.3 --context-size 8192
 Override the system prompt:
 ```shell
 otdfctl llm chat /models/custom.gguf --system-prompt "You are a security expert focused on data protection."
+```
+
+Enable RAG for context-aware responses:
+```shell
+otdfctl llm chat /models/llama3.2.gguf --rag
+```
+
+Use custom RAG index and embedding model:
+```shell
+otdfctl llm chat /models/chat.gguf --rag --index-path ./my_docs.json --embedding-model /models/embeddings.gguf
 ```
 
 ## Model Requirements

@@ -41,15 +41,21 @@ type ChatResponse struct {
 
 // ChatEngine manages the LLM inference using Ollama's internal llama bindings
 type ChatEngine struct {
-	modelPath    string
-	model        *llama.Model
-	context      *llama.Context
-	requestChan  chan ChatRequest
-	responseChan chan ChatResponse
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.RWMutex
-	running      bool
+	modelPath       string
+	model           *llama.Model
+	context         *llama.Context
+	requestChan     chan ChatRequest
+	responseChan    chan ChatResponse
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.RWMutex
+	running         bool
+	// RAG components
+	vectorStore     *VectorStore
+	embeddingEngine *EmbeddingEngine
+	simpleRAGStore  *SimpleRAGStore
+	ragEnabled      bool
+	simpleRAGEnabled bool
 }
 
 // NewChatEngine creates a new chat engine instance
@@ -62,7 +68,31 @@ func NewChatEngine(modelPath string) *ChatEngine {
 		responseChan: make(chan ChatResponse, 10),
 		ctx:          ctx,
 		cancel:       cancel,
+		ragEnabled:   false,
 	}
+}
+
+// EnableRAG enables Retrieval-Augmented Generation with the given vector store and embedding engine
+func (ce *ChatEngine) EnableRAG(vectorStore *VectorStore, embeddingEngine *EmbeddingEngine) {
+	ce.mu.Lock()
+	defer ce.mu.Unlock()
+	
+	ce.vectorStore = vectorStore
+	ce.embeddingEngine = embeddingEngine
+	ce.ragEnabled = true
+	
+	log.Printf("RAG enabled with %d documents in vector store", vectorStore.GetDocumentCount())
+}
+
+// EnableSimpleRAG enables simple keyword-based RAG with the given store
+func (ce *ChatEngine) EnableSimpleRAG(simpleStore *SimpleRAGStore) {
+	ce.mu.Lock()
+	defer ce.mu.Unlock()
+	
+	ce.simpleRAGStore = simpleStore
+	ce.simpleRAGEnabled = true
+	
+	log.Printf("Simple RAG enabled with %d documents", simpleStore.GetDocumentCount())
 }
 
 // Start initializes and starts the chat engine with Ollama's llama bindings
@@ -221,8 +251,16 @@ func (ce *ChatEngine) inferenceLoop() {
 
 // processRequest handles individual chat requests using Ollama's llama bindings
 func (ce *ChatEngine) processRequest(request ChatRequest) {
-	// Build prompt from messages
-	prompt := ce.buildPrompt(request.Messages)
+	// Get user query for RAG
+	userQuery := ce.extractUserQuery(request.Messages)
+	
+	// Build prompt from messages with optional RAG context
+	prompt, err := ce.buildPromptWithRAG(request.Messages, userQuery)
+	if err != nil {
+		log.Printf("Failed to build prompt with RAG: %v", err)
+		ce.sendErrorResponse(fmt.Errorf("failed to build prompt: %v", err))
+		return
+	}
 	
 	if ce.model != nil && ce.context != nil {
 		// Real inference with loaded model
@@ -459,14 +497,118 @@ func (ce *ChatEngine) streamRealResponse(content string) {
 	}
 }
 
+// extractUserQuery extracts the latest user message for RAG search
+func (ce *ChatEngine) extractUserQuery(messages []ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+// buildPromptWithRAG builds a prompt with optional RAG context
+func (ce *ChatEngine) buildPromptWithRAG(messages []ChatMessage, userQuery string) (string, error) {
+	var systemMessage string
+	var conversationMessages []ChatMessage
+	
+	// Separate system message from conversation
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemMessage = msg.Content
+		} else {
+			conversationMessages = append(conversationMessages, msg)
+		}
+	}
+	
+	// Add RAG context if enabled
+	if ce.ragEnabled && userQuery != "" && ce.vectorStore != nil && ce.embeddingEngine != nil {
+		ragContext, err := ce.retrieveRAGContext(userQuery)
+		if err != nil {
+			log.Printf("Warning: RAG retrieval failed: %v", err)
+		} else if ragContext.NumDocuments > 0 {
+			// Enhance system message with retrieved context
+			enhancedSystem := fmt.Sprintf("%s\n\n%s\n\nBased on the above documentation, please provide accurate and helpful responses about OpenTDF.", 
+				systemMessage, ragContext.ContextText)
+			systemMessage = enhancedSystem
+			
+			log.Printf("RAG: Retrieved %d relevant documents for query", ragContext.NumDocuments)
+		}
+	} else if ce.simpleRAGEnabled && userQuery != "" && ce.simpleRAGStore != nil {
+		ragContext, err := ce.retrieveSimpleRAGContext(userQuery)
+		if err != nil {
+			log.Printf("Warning: Simple RAG retrieval failed: %v", err)
+		} else if ragContext.NumDocuments > 0 {
+			// Enhance system message with retrieved context
+			enhancedSystem := fmt.Sprintf("%s\n\n%s\n\nBased on the above documentation, please provide accurate and helpful responses about OpenTDF.", 
+				systemMessage, ragContext.ContextText)
+			systemMessage = enhancedSystem
+			
+			log.Printf("Simple RAG: Retrieved %d relevant documents for query", ragContext.NumDocuments)
+		}
+	}
+	
+	return ce.buildPrompt(systemMessage, conversationMessages), nil
+}
+
+// retrieveRAGContext performs similarity search and builds context
+func (ce *ChatEngine) retrieveRAGContext(query string) (RAGContext, error) {
+	// Generate embedding for the query
+	queryEmbedding, err := ce.embeddingEngine.GenerateEmbedding(query)
+	if err != nil {
+		return RAGContext{}, fmt.Errorf("failed to generate query embedding: %v", err)
+	}
+	
+	// Search for similar documents
+	results, err := ce.vectorStore.Search(queryEmbedding, 5) // Top 5 results
+	if err != nil {
+		return RAGContext{}, fmt.Errorf("similarity search failed: %v", err)
+	}
+	
+	// Filter results by similarity threshold
+	var filteredResults []SimilarityResult
+	for _, result := range results {
+		if result.Similarity > 0.3 { // Minimum similarity threshold
+			filteredResults = append(filteredResults, result)
+		}
+	}
+	
+	// Build context with max 2000 tokens to leave room for conversation
+	return BuildRAGContext(query, filteredResults, 2000), nil
+}
+
+// retrieveSimpleRAGContext performs simple keyword search and builds context
+func (ce *ChatEngine) retrieveSimpleRAGContext(query string) (RAGContext, error) {
+	// Search for similar documents using simple keyword matching
+	results, err := ce.simpleRAGStore.Search(query, 5) // Top 5 results
+	if err != nil {
+		return RAGContext{}, fmt.Errorf("simple search failed: %v", err)
+	}
+	
+	// Filter results by score threshold
+	var filteredResults []SearchResult
+	for _, result := range results {
+		if result.Score > 0.1 { // Minimum score threshold
+			filteredResults = append(filteredResults, result)
+		}
+	}
+	
+	// Build context with max 2000 tokens to leave room for conversation
+	return BuildSimpleRAGContext(query, filteredResults, 2000), nil
+}
+
 // buildPrompt converts chat messages to a prompt string
-func (ce *ChatEngine) buildPrompt(messages []ChatMessage) string {
+func (ce *ChatEngine) buildPrompt(systemMessage string, messages []ChatMessage) string {
 	var prompt strings.Builder
 	
+	// Add system message
+	if systemMessage != "" {
+		prompt.WriteString(fmt.Sprintf("<|im_start|>system\n%s<|im_end|>\n", systemMessage))
+	}
+	
+	// Add conversation messages
 	for _, msg := range messages {
 		switch msg.Role {
-		case "system":
-			prompt.WriteString(fmt.Sprintf("<|im_start|>system\n%s<|im_end|>\n", msg.Content))
 		case "user":
 			prompt.WriteString(fmt.Sprintf("<|im_start|>user\n%s<|im_end|>\n", msg.Content))
 		case "assistant":
