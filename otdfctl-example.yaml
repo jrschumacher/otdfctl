@@ -3,8 +3,10 @@ output:
   format: styled
 
 llm:
-  # default model path (can be overridden with --model-path flag)
+  # default model path for chat (can be overridden with argument)
   default_model_path: ""
+  # default embedding model path for RAG (can be overridden with --embedding-model flag)  
+  default_embedding_model_path: ""
   # default context size for models
   context_size: 4096
   # default temperature (0.0-1.0, higher = more creative)
@@ -13,3 +15,18 @@ llm:
   stream: true
   # custom system prompt (empty = use default OpenTDF prompt)
   system_prompt: ""
+  
+  # Resource limits for security and stability
+  resource_limits:
+    # Maximum memory usage in MB
+    max_memory_mb: 2048
+    # Maximum file size for ingestion (bytes)
+    max_file_size: 10485760  # 10MB
+    # Maximum number of files to process
+    max_files: 1000
+    # Process timeout in seconds (file operations, ingestion)
+    process_timeout_sec: 300  # 5 minutes
+    # Inference timeout in seconds (model generation)
+    inference_timeout_sec: 120  # 2 minutes
+    # Maximum concurrent operations
+    max_concurrent_ops: 3

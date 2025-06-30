@@ -41,6 +41,14 @@ func NewDocumentIngester(vectorStore *VectorStore, embeddingEngine *EmbeddingEng
 func (di *DocumentIngester) IngestFromGitHub() error {
 	log.Printf("Starting document ingestion from OpenTDF docs repository...")
 	
+	// Validate repository URL for security
+	urlValidator := NewURLValidator()
+	if err := urlValidator.ValidateURL(di.repoURL); err != nil {
+		return fmt.Errorf("invalid repository URL: %w", err)
+	}
+	
+	// Note: Individual file validation is done in downloadFile method
+	
 	// List of important documentation files to ingest
 	docFiles := []string{
 		"README.md",
@@ -182,8 +190,14 @@ func (di *DocumentIngester) fetchAndProcessDocument(filePath string) (*Document,
 	}, nil
 }
 
-// downloadFile downloads a file from a URL
+// downloadFile downloads a file from a URL with security validation
 func (di *DocumentIngester) downloadFile(url string) (string, error) {
+	// Validate URL before downloading
+	urlValidator := NewURLValidator()
+	if err := urlValidator.ValidateURL(url); err != nil {
+		return "", fmt.Errorf("invalid download URL: %w", err)
+	}
+	
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -198,12 +212,38 @@ func (di *DocumentIngester) downloadFile(url string) (string, error) {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 	
-	body, err := io.ReadAll(resp.Body)
+	// Limit response size to prevent memory exhaustion
+	const maxDownloadSize = 5 * 1024 * 1024 // 5MB
+	if resp.ContentLength > maxDownloadSize {
+		return "", fmt.Errorf("file too large: %d bytes (max: %d)", resp.ContentLength, maxDownloadSize)
+	}
+	
+	// Use limited reader to prevent unbounded memory usage
+	limitedReader := io.LimitReader(resp.Body, maxDownloadSize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return "", err
 	}
 	
-	return string(body), nil
+	if len(body) > maxDownloadSize {
+		return "", fmt.Errorf("downloaded content exceeds size limit")
+	}
+	
+	// Validate downloaded content
+	content := string(body)
+	fileValidator := NewFileValidator()
+	if err := fileValidator.ValidateFileContent(content); err != nil {
+		return "", fmt.Errorf("downloaded content validation failed: %w", err)
+	}
+	
+	// Sanitize content
+	sanitizer := NewInputSanitizer()
+	sanitizedContent, err := sanitizer.SanitizeUserInput(content)
+	if err != nil {
+		return "", fmt.Errorf("content sanitization failed: %w", err)
+	}
+	
+	return sanitizedContent, nil
 }
 
 // processMarkdown cleans and processes markdown content for embedding

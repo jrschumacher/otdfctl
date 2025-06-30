@@ -18,11 +18,24 @@ var llmCmd = man.Docs.GetCommand("llm")
 var llmChatCmd = man.Docs.GetCommand("llm/chat", man.WithRun(func(cmd *cobra.Command, args []string) {
 	c := cli.New(cmd, args)
 	
+	var modelPath string
 	if len(args) == 0 {
-		c.ExitWithError("Model path is required", nil)
+		// Try to get from configuration
+		pathResolver := llm.NewModelPathResolver(&OtdfctlCfg)
+		resolvedPath, err := pathResolver.ResolveChatModelPath("")
+		if err != nil {
+			c.ExitWithError("Model path is required (provide as argument or set in configuration)", err)
+		}
+		modelPath = resolvedPath
+	} else {
+		// Validate user-provided path
+		pathResolver := llm.NewModelPathResolver(&OtdfctlCfg)
+		resolvedPath, err := pathResolver.ResolveChatModelPath(args[0])
+		if err != nil {
+			c.ExitWithError("Invalid model path", err)
+		}
+		modelPath = resolvedPath
 	}
-	
-	modelPath := args[0]
 	
 	// Get flag values
 	stream := c.Flags.GetOptionalBool("stream")
@@ -33,8 +46,8 @@ var llmChatCmd = man.Docs.GetCommand("llm/chat", man.WithRun(func(cmd *cobra.Com
 	enableRAG := c.Flags.GetOptionalBool("rag")
 	indexPath := c.Flags.GetOptionalString("index-path")
 	
-	// Initialize simple chat engine to avoid goroutine issues
-	simpleEngine := llm.NewSimpleChatEngine(modelPath)
+	// Initialize simple chat engine with resource management
+	simpleEngine := llm.NewSimpleChatEngineWithConfig(modelPath, &OtdfctlCfg)
 	
 	// Set defaults for RAG if enabled
 	if enableRAG {

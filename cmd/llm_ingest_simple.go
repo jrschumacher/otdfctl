@@ -46,15 +46,41 @@ var llmIngestSimpleCmd = &cobra.Command{
 
 	c.Printf("\n📚 Starting document ingestion...\n")
 
+	// Initialize file validator with secure settings
+	validator := llm.NewFileValidator().
+		WithMaxFileSize(5 * 1024 * 1024).  // 5MB max per file
+		WithMaxFiles(500).                  // 500 files max
+		WithAllowedExtensions([]string{".md", ".txt", ".rst"})
+
+	// Validate source directory first
+	if err := validator.ValidateDirectory(sourcePath); err != nil {
+		c.ExitWithError("Invalid source directory", err)
+	}
+
+	// Count files to ensure we don't exceed limits
+	fileCount, err := validator.CountFilesInDirectory(sourcePath)
+	if err != nil {
+		c.ExitWithError("Failed to validate directory contents", err)
+	}
+	c.Printf("   Found %d valid files to process\n", fileCount)
+
+	// Input sanitizer for content validation
+	sanitizer := llm.NewInputSanitizer()
+
 	totalProcessed := 0
 
-	err := filepath.WalkDir(sourcePath, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(sourcePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Only process markdown files
-		if !d.IsDir() && strings.HasSuffix(strings.ToLower(path), ".md") {
+		// Only process allowed files with validation
+		if !d.IsDir() && validator.IsAllowedExtension(filepath.Ext(path)) {
+			// Validate each file before processing
+			if err := validator.ValidateFile(path); err != nil {
+				c.Printf("Warning: skipping invalid file %s: %v\n", path, err)
+				return nil
+			}
 			relPath, _ := filepath.Rel(sourcePath, path)
 			c.Printf("Processing: %s\n", relPath)
 
@@ -64,7 +90,20 @@ var llmIngestSimpleCmd = &cobra.Command{
 				return nil
 			}
 
-			processed := processMarkdownSimple(string(content))
+			// Validate and sanitize content
+			contentStr := string(content)
+			if err := validator.ValidateFileContent(contentStr); err != nil {
+				c.Printf("Warning: skipping file with invalid content %s: %v\n", path, err)
+				return nil
+			}
+
+			sanitizedContent, err := sanitizer.SanitizeUserInput(contentStr)
+			if err != nil {
+				c.Printf("Warning: failed to sanitize content %s: %v\n", path, err)
+				return nil
+			}
+
+			processed := processMarkdownSimple(sanitizedContent)
 			if strings.TrimSpace(processed) == "" {
 				return nil
 			}

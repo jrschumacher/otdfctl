@@ -19,10 +19,13 @@ var llmIngestCmd = man.Docs.GetCommand("llm/ingest", man.WithRun(func(cmd *cobra
 	sourcePath := c.Flags.GetOptionalString("path")
 	cacheDir := c.Flags.GetOptionalString("cache-dir")
 
-	// Set defaults
-	if embeddingModelPath == "" {
-		embeddingModelPath = "/Users/ryan/.ollama/models/blobs/sha256-74701a8c35f6c8d9a4b91f3f3497643001d63e0c7a84e085bed452548fa88d45"
+	// Secure model path resolution
+	pathResolver := llm.NewModelPathResolver(&OtdfctlCfg)
+	resolvedEmbeddingPath, err := pathResolver.ResolveEmbeddingModelPath(embeddingModelPath)
+	if err != nil {
+		c.ExitWithError("Failed to resolve embedding model path", err)
 	}
+	embeddingModelPath = resolvedEmbeddingPath
 	if indexPath == "" {
 		homeDir, _ := os.UserHomeDir()
 		indexPath = filepath.Join(homeDir, ".otdfctl", "rag_index.json")

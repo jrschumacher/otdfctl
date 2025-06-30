@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ollama/ollama/llama"
+	"github.com/opentdf/otdfctl/pkg/config"
 )
 
 // SimpleEngine is a simplified LLM engine without complex goroutine management
@@ -16,6 +17,7 @@ type SimpleChatEngine struct {
 	context         *llama.Context
 	simpleRAGStore  *SimpleRAGStore
 	ragEnabled      bool
+	resourceManager *ResourceManager
 	mu              sync.Mutex
 	running         bool
 }
@@ -26,6 +28,16 @@ func NewSimpleChatEngine(modelPath string) *SimpleChatEngine {
 		modelPath:  modelPath,
 		ragEnabled: false,
 		running:    false,
+	}
+}
+
+// NewSimpleChatEngineWithConfig creates a new simplified chat engine with configuration
+func NewSimpleChatEngineWithConfig(modelPath string, cfg *config.Config) *SimpleChatEngine {
+	return &SimpleChatEngine{
+		modelPath:       modelPath,
+		ragEnabled:      false,
+		running:         false,
+		resourceManager: NewResourceManagerFromConfig(cfg),
 	}
 }
 
@@ -128,6 +140,22 @@ func (sce *SimpleChatEngine) Chat(messages []ChatMessage) SimpleResponse {
 	
 	if !sce.running {
 		return SimpleResponse{Error: fmt.Errorf("engine not running")}
+	}
+	
+	// Resource management if available
+	if sce.resourceManager != nil {
+		opWrapper, err := sce.resourceManager.NewOperationWrapper("inference")
+		if err != nil {
+			return SimpleResponse{Error: fmt.Errorf("resource check failed: %w", err)}
+		}
+		defer opWrapper.Close()
+		
+		// Check progress periodically during operation
+		defer func() {
+			if err := opWrapper.CheckProgress(); err != nil {
+				log.Printf("Resource check warning during inference: %v", err)
+			}
+		}()
 	}
 	
 	// Extract user query for RAG

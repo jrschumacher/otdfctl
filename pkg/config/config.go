@@ -34,11 +34,22 @@ type Output struct {
 }
 
 type LLM struct {
-	DefaultModelPath string  `yaml:"default_model_path" default:""`
-	ContextSize      int     `yaml:"context_size" default:"4096"`
-	Temperature      float64 `yaml:"temperature" default:"0.7"`
-	Stream           bool    `yaml:"stream" default:"true"`
-	SystemPrompt     string  `yaml:"system_prompt" default:""`
+	DefaultModelPath          string       `yaml:"default_model_path" default:""`
+	DefaultEmbeddingModelPath string       `yaml:"default_embedding_model_path" default:""`
+	ContextSize               int          `yaml:"context_size" default:"4096"`
+	Temperature               float64      `yaml:"temperature" default:"0.7"`
+	Stream                    bool         `yaml:"stream" default:"true"`
+	SystemPrompt              string       `yaml:"system_prompt" default:""`
+	ResourceLimits            ResourceLimits `yaml:"resource_limits"`
+}
+
+type ResourceLimits struct {
+	MaxMemoryMB        int `yaml:"max_memory_mb" default:"2048"`
+	MaxFileSize        int64 `yaml:"max_file_size" default:"10485760"`      // 10MB
+	MaxFiles           int `yaml:"max_files" default:"1000"`
+	ProcessTimeoutSec  int `yaml:"process_timeout_sec" default:"300"`      // 5 minutes
+	InferenceTimeoutSec int `yaml:"inference_timeout_sec" default:"120"`   // 2 minutes
+	MaxConcurrentOps   int `yaml:"max_concurrent_ops" default:"3"`
 }
 
 type Config struct {
