@@ -33,9 +33,9 @@ func NewResourceManager(cfg *config.ResourceLimits) *ResourceManager {
 // NewResourceManagerFromConfig creates a resource manager from LLM config
 func NewResourceManagerFromConfig(cfg *config.Config) *ResourceManager {
 	if cfg == nil {
-		// Use secure defaults
+		// Use secure defaults with higher memory limit for LLM models
 		return NewResourceManager(&config.ResourceLimits{
-			MaxMemoryMB:         2048,
+			MaxMemoryMB:         8192, // 8GB for LLM models
 			MaxFileSize:         10 * 1024 * 1024, // 10MB
 			MaxFiles:            1000,
 			ProcessTimeoutSec:   300, // 5 minutes
@@ -43,7 +43,29 @@ func NewResourceManagerFromConfig(cfg *config.Config) *ResourceManager {
 			MaxConcurrentOps:    3,
 		})
 	}
-	return NewResourceManager(&cfg.LLM.ResourceLimits)
+	
+	// Apply defaults if the nested ResourceLimits is empty
+	limits := cfg.LLM.ResourceLimits
+	if limits.MaxMemoryMB == 0 {
+		limits.MaxMemoryMB = 8192 // 8GB default
+	}
+	if limits.MaxFileSize == 0 {
+		limits.MaxFileSize = 10 * 1024 * 1024 // 10MB
+	}
+	if limits.MaxFiles == 0 {
+		limits.MaxFiles = 1000
+	}
+	if limits.ProcessTimeoutSec == 0 {
+		limits.ProcessTimeoutSec = 300
+	}
+	if limits.InferenceTimeoutSec == 0 {
+		limits.InferenceTimeoutSec = 120
+	}
+	if limits.MaxConcurrentOps == 0 {
+		limits.MaxConcurrentOps = 3
+	}
+	
+	return NewResourceManager(&limits)
 }
 
 // CheckMemoryUsage validates current memory usage against limits
@@ -51,8 +73,9 @@ func (rm *ResourceManager) CheckMemoryUsage() error {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	
-	// Convert to MB for comparison
-	currentMB := (m.Alloc - rm.memoryBaseline) / 1024 / 1024
+	// Use absolute memory allocation instead of relative to baseline
+	// This is more reliable for LLM applications where models can be large
+	currentMB := m.Alloc / 1024 / 1024
 	maxMB := uint64(rm.config.MaxMemoryMB)
 	
 	if currentMB > maxMB {
@@ -124,7 +147,7 @@ func (rm *ResourceManager) GetMemoryStatus() MemoryStatus {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	
-	currentMB := (m.Alloc - rm.memoryBaseline) / 1024 / 1024
+	currentMB := m.Alloc / 1024 / 1024
 	maxMB := uint64(rm.config.MaxMemoryMB)
 	
 	return MemoryStatus{

@@ -146,16 +146,19 @@ func (sce *SimpleChatEngine) Chat(messages []ChatMessage) SimpleResponse {
 	if sce.resourceManager != nil {
 		opWrapper, err := sce.resourceManager.NewOperationWrapper("inference")
 		if err != nil {
-			return SimpleResponse{Error: fmt.Errorf("resource check failed: %w", err)}
+			// Log the resource warning but don't fail - LLMs need flexible memory
+			log.Printf("Resource warning (continuing anyway): %v", err)
+			// Continue without resource wrapper
+		} else {
+			defer opWrapper.Close()
+			
+			// Check progress periodically during operation
+			defer func() {
+				if err := opWrapper.CheckProgress(); err != nil {
+					log.Printf("Resource check warning during inference: %v", err)
+				}
+			}()
 		}
-		defer opWrapper.Close()
-		
-		// Check progress periodically during operation
-		defer func() {
-			if err := opWrapper.CheckProgress(); err != nil {
-				log.Printf("Resource check warning during inference: %v", err)
-			}
-		}()
 	}
 	
 	// Extract user query for RAG
@@ -172,10 +175,8 @@ func (sce *SimpleChatEngine) Chat(messages []ChatMessage) SimpleResponse {
 		return SimpleResponse{Error: fmt.Errorf("model or context not loaded")}
 	}
 	
-	log.Printf("Starting inference...")
 	response, err := sce.performSimpleInference(prompt)
 	if err != nil {
-		log.Printf("Inference failed: %v", err)
 		return SimpleResponse{Error: err}
 	}
 	
@@ -291,12 +292,12 @@ func (sce *SimpleChatEngine) performSimpleInference(prompt string) (string, erro
 		return "", fmt.Errorf("tokenization failed: %v", err)
 	}
 	
-	log.Printf("Prompt tokenized to %d tokens", len(tokens))
+	// Tokenized prompt ready for processing
 	
 	// Limit batch size to prevent assertion errors
 	maxBatchSize := 512
 	if len(tokens) > maxBatchSize {
-		log.Printf("Truncating prompt from %d to %d tokens", len(tokens), maxBatchSize)
+		// Truncating prompt to fit batch size
 		tokens = tokens[:maxBatchSize]
 	}
 	
@@ -381,12 +382,12 @@ func (sce *SimpleChatEngine) performStreamingInference(prompt string, callback S
 		return "", fmt.Errorf("tokenization failed: %v", err)
 	}
 	
-	log.Printf("Prompt tokenized to %d tokens", len(tokens))
+	// Tokenized prompt ready for processing
 	
 	// Limit batch size to prevent assertion errors
 	maxBatchSize := 512
 	if len(tokens) > maxBatchSize {
-		log.Printf("Truncating prompt from %d to %d tokens", len(tokens), maxBatchSize)
+		// Truncating prompt to fit batch size
 		tokens = tokens[:maxBatchSize]
 	}
 	

@@ -44,7 +44,7 @@ type LLM struct {
 }
 
 type ResourceLimits struct {
-	MaxMemoryMB        int `yaml:"max_memory_mb" default:"2048"`
+	MaxMemoryMB        int `yaml:"max_memory_mb" default:"8192"`
 	MaxFileSize        int64 `yaml:"max_file_size" default:"10485760"`      // 10MB
 	MaxFiles           int `yaml:"max_files" default:"1000"`
 	ProcessTimeoutSec  int `yaml:"process_timeout_sec" default:"300"`      // 5 minutes
