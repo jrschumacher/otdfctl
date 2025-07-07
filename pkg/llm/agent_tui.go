@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -14,6 +15,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// Streaming configuration constants
+const (
+	ChannelBufferSize = 100                      // Tokens buffered
+	TickInterval      = 50 * time.Millisecond    // UI update frequency  
+	MaxTokensPerTick  = 10                       // Throttling limit
+	StreamingTimeout  = 30 * time.Second         // Overall timeout
+)
+
+// RunAgentChatTUI starts the enhanced Bubbletea TUI interface
+func RunAgentChatTUI(model *AgentChatModel) error {
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	_, err := program.Run()
+	return err
+}
 
 // AgentChatModel represents the main TUI model for agent-based chat
 type AgentChatModel struct {
@@ -45,6 +61,16 @@ type AgentChatModel struct {
 	height          int
 	ready           bool
 	quitting        bool
+	
+	// Channel-based streaming state
+	streamingCh       chan string
+	streamingDone     chan error
+	streamingActive   bool
+	streamingContent  strings.Builder
+	streamingAgent    *Agent
+	responseStartTime time.Time
+	responseEndTime   time.Time
+	tokenBatch        []string
 	
 	// Keybindings
 	keys            AgentChatKeyMap
@@ -113,7 +139,7 @@ func DefaultAgentChatKeyMap() AgentChatKeyMap {
 
 // ShortHelp returns key help
 func (k AgentChatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.SwitchAgent, k.ShowAgents, k.Summarize, k.Quit}
+	return []key.Binding{k.Send, k.SwitchAgent, k.ShowAgents, k.Quit}
 }
 
 // FullHelp returns full key help
@@ -137,6 +163,12 @@ func NewAgentChatModel(agentManager *AgentManager, chatEngine *SimpleChatEngine)
 	ta.ShowLineNumbers = false
 	// Allow multi-line input but we'll handle Enter key manually
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+	
+	// Set transparent/default colors for textarea
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	
 	// Initialize viewport for chat history
 	vp := viewport.New(80, 20)
@@ -260,6 +292,33 @@ type ResponseMsg struct {
 	tokens   int
 }
 
+// StreamingTokenMsg is sent for each token during streaming
+type StreamingTokenMsg struct {
+	token string
+	agent *Agent
+}
+
+// StreamingCompleteMsg is sent when streaming is finished
+type StreamingCompleteMsg struct {
+	fullResponse string
+	agent        *Agent
+	tokens       int
+	error        error
+}
+
+// StreamingTickMsg is sent periodically to check for new tokens
+type StreamingTickMsg struct{}
+
+// StreamingTokensMsg is sent with batched tokens
+type StreamingTokensMsg struct {
+	Tokens []string
+}
+
+// StreamingStartMsg is sent when streaming begins
+type StreamingStartMsg struct {
+	agent *Agent
+}
+
 // Update handles messages and updates the model
 func (m *AgentChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
@@ -295,11 +354,12 @@ func (m *AgentChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Summarize):
 			return m.handleManualSummarization()
 			
+			
 		// Handle Enter key based on context and modifiers
 		case msg.String() == "enter":
 			if m.showAgentList {
 				return m.handleAgentSelection()
-			} else if !m.showAgentList {
+			} else {
 				// Plain Enter sends message, Shift+Enter is handled by textarea for new lines
 				return m.handleSendMessage()
 			}
@@ -346,6 +406,102 @@ func (m *AgentChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 		
+	case StreamingTickMsg:
+		if !m.streamingActive {
+			// Not streaming, ignore tick
+			return m, nil
+		}
+		
+		// Check for completion first
+		select {
+		case err := <-m.streamingDone:
+			// Streaming completed
+			m.streamingActive = false
+			m.responseEndTime = time.Now()
+			
+			// Streaming completed
+			fullResponse := m.streamingContent.String()
+			
+			if err != nil {
+				m.addSystemMessage(fmt.Sprintf("❌ Error: %v", err))
+			} else {
+				// Add the complete response
+				m.addMessage(ChatMessage{
+					Role:    "assistant",
+					Content: fullResponse,
+				})
+				m.conversationTokens += len(fullResponse) / 4 // Rough token estimate
+				m.updateContextUsage()
+				
+				// Add timing info
+				duration := m.responseEndTime.Sub(m.responseStartTime)
+				m.addTimingMessage(fmt.Sprintf("Response generated in %v", duration.Round(time.Millisecond)))
+			}
+			m.cleanupStreaming()
+			return m, nil
+		default:
+			// Continue streaming
+		}
+		
+		// Drain available tokens
+		tokens := m.drainAvailableTokens()
+		if len(tokens) > 0 {
+			// Send token batch and schedule next tick
+			return m, tea.Batch(
+				func() tea.Msg {
+					return StreamingTokensMsg{Tokens: tokens}
+				},
+				m.createTokenTick(),
+			)
+		}
+		
+		// No tokens available, just schedule next tick
+		return m, m.createTokenTick()
+		
+	case StreamingTokensMsg:
+		if m.streamingActive {
+			// Process batched tokens
+			for _, token := range msg.Tokens {
+				m.streamingContent.WriteString(token)
+			}
+			// Process batched tokens
+			// Update the viewport with current streaming content
+			m.updateStreamingViewport()
+		}
+		return m, nil
+		
+	case StreamingStartMsg:
+		m.streamingActive = true
+		m.streamingContent.Reset()
+		m.streamingAgent = msg.agent
+		m.responseStartTime = time.Now()
+		
+		// Start streaming
+		// Update viewport to show streaming cursor immediately
+		m.updateStreamingViewport()
+		return m, nil
+		
+	case StreamingCompleteMsg:
+		// Legacy message type - handle for backward compatibility but this shouldn't be used
+		m.streamingActive = false
+		m.responseEndTime = time.Now()
+		
+		if msg.error != nil {
+			m.addSystemMessage(fmt.Sprintf("❌ Error: %v", msg.error))
+		} else {
+			m.addMessage(ChatMessage{
+				Role:    "assistant",
+				Content: msg.fullResponse,
+			})
+			m.conversationTokens += msg.tokens
+			m.updateContextUsage()
+			
+			duration := m.responseEndTime.Sub(m.responseStartTime)
+			m.addTimingMessage(fmt.Sprintf("Response generated in %v", duration.Round(time.Millisecond)))
+		}
+		m.streamingContent.Reset()
+		return m, nil
+		
 	case SummarizationCompleteMsg:
 		if msg.success {
 			m.messages = msg.summarizedMessages
@@ -365,8 +521,15 @@ func (m *AgentChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	} else {
 		// Don't pass Enter key to textarea if we handled it for sending
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "enter" {
-			// We already handled Enter for sending, don't pass to textarea
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "enter":
+				// We already handled Enter for sending, don't pass to textarea
+				// This prevents newlines from being added after sending
+			default:
+				m.textarea, cmd = m.textarea.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		} else {
 			m.textarea, cmd = m.textarea.Update(msg)
 			cmds = append(cmds, cmd)
@@ -394,6 +557,9 @@ func (m *AgentChatModel) handleSendMessage() (tea.Model, tea.Cmd) {
 	
 	// Clear textarea
 	m.textarea.SetValue("")
+	
+	// Recalculate sizes after adding message
+	m.updateSizes()
 	
 	// Check if we need to suggest agent switch
 	if suggestedAgent, reason, err := m.agentManager.SuggestAgentSwitch(userInput); err == nil && suggestedAgent != nil {
@@ -469,15 +635,28 @@ type SummarizationCompleteMsg struct {
 	error             error
 }
 
-// generateResponse sends the query to the current agent
+// generateResponse sends the query to the current agent with streaming
 func (m *AgentChatModel) generateResponse(userInput string) tea.Cmd {
+	return tea.Batch(
+		// First, send the streaming start message
+		func() tea.Msg {
+			return StreamingStartMsg{agent: m.currentAgent}
+		},
+		// Start channels and tick processing
+		m.startStreaming(),
+		// Then start the streaming generation
+		m.generateStreamingResponse(userInput),
+	)
+}
+
+// generateStreamingResponse handles the actual streaming generation
+func (m *AgentChatModel) generateStreamingResponse(userInput string) tea.Cmd {
 	return func() tea.Msg {
 		if m.currentAgent == nil || m.chatEngine == nil {
-			return ResponseMsg{
-				response: "No agent selected or chat engine not available.",
-				agent:    nil,
-				tokens:   0,
+			if m.streamingDone != nil {
+				m.streamingDone <- fmt.Errorf("no agent selected or chat engine not available")
 			}
+			return nil
 		}
 		
 		// Build messages with current agent's system prompt and ONLY the current user input
@@ -487,25 +666,122 @@ func (m *AgentChatModel) generateResponse(userInput string) tea.Cmd {
 			{Role: "user", Content: userInput},
 		}
 		
-		// Generate response using simple chat engine
-		response := m.chatEngine.Chat(messages)
-		if response.Error != nil {
-			return ResponseMsg{
-				response: fmt.Sprintf("Error: %v", response.Error),
-				agent:    m.currentAgent,
-				tokens:   0,
+		// Start the streaming in a goroutine with timeout
+		go func() {
+			// Create context with timeout
+			ctx, cancel := context.WithTimeout(context.Background(), StreamingTimeout)
+			defer cancel()
+			
+			var fullResponse strings.Builder
+			tokenCount := 0
+			
+			// Channel to collect result
+			resultCh := make(chan error, 1)
+			
+			// Start the actual streaming in another goroutine
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						resultCh <- fmt.Errorf("streaming panic: %v", r)
+					}
+				}()
+				
+				// Streaming callback that sends tokens to the model's channel
+				callback := func(token string) {
+					tokenCount++
+					fullResponse.WriteString(token)
+					
+					// Try to send token to the model's channel (non-blocking)
+					if m.streamingCh != nil {
+						select {
+						case m.streamingCh <- token:
+							// Token sent successfully to channel
+						default:
+							// Channel full, skip this token to prevent blocking
+						}
+					}
+				}
+				
+				// Generate response using streaming chat engine
+				response := m.chatEngine.ChatStream(messages, callback)
+				resultCh <- response.Error
+			}()
+			
+			// Wait for completion or timeout
+			select {
+			case err := <-resultCh:
+				// Streaming completed
+				if m.streamingDone != nil {
+					m.streamingDone <- err
+				}
+			case <-ctx.Done():
+				// Timeout occurred
+				if m.streamingDone != nil {
+					m.streamingDone <- fmt.Errorf("streaming timeout after %v", StreamingTimeout)
+				}
 			}
-		}
+		}()
 		
-		// Estimate token usage (rough approximation)
-		tokens := len(response.Content) / 4
-		
-		return ResponseMsg{
-			response: response.Content,
-			agent:    m.currentAgent,
-			tokens:   tokens,
+		// Return nil since the tick system will handle the streaming
+		return nil
+	}
+}
+
+
+// Channel management methods
+
+// startStreaming creates channels and starts the streaming process
+func (m *AgentChatModel) startStreaming() tea.Cmd {
+	// Create buffered channels with capacity from constants
+	m.streamingCh = make(chan string, ChannelBufferSize)
+	m.streamingDone = make(chan error, 1)
+	m.streamingActive = true
+	m.tokenBatch = make([]string, 0, MaxTokensPerTick)
+	
+	// Return first tick command
+	return m.createTokenTick()
+}
+
+// drainAvailableTokens reads available tokens from channel (non-blocking)
+func (m *AgentChatModel) drainAvailableTokens() []string {
+	var tokens []string
+	
+	for len(tokens) < MaxTokensPerTick {
+		select {
+		case token, ok := <-m.streamingCh:
+			if !ok {
+				// Channel closed
+				return tokens
+			}
+			tokens = append(tokens, token)
+		default:
+			// No more tokens available, return what we have
+			return tokens
 		}
 	}
+	
+	return tokens
+}
+
+// cleanupStreaming safely closes channels and resets state
+func (m *AgentChatModel) cleanupStreaming() {
+	if m.streamingCh != nil {
+		close(m.streamingCh)
+		m.streamingCh = nil
+	}
+	if m.streamingDone != nil {
+		close(m.streamingDone)
+		m.streamingDone = nil
+	}
+	m.streamingActive = false
+	m.tokenBatch = nil
+}
+
+// createTokenTick creates a periodic tick command for checking tokens
+func (m *AgentChatModel) createTokenTick() tea.Cmd {
+	return tea.Tick(TickInterval, func(time.Time) tea.Msg {
+		return StreamingTickMsg{}
+	})
 }
 
 // addMessage adds a message to the conversation
@@ -517,6 +793,8 @@ func (m *AgentChatModel) addMessage(msg ChatMessage) {
 		m.checkAutoSummarization()
 	}
 	
+	// Recalculate sizes when content changes
+	m.updateSizes()
 	m.updateViewport()
 }
 
@@ -524,6 +802,14 @@ func (m *AgentChatModel) addMessage(msg ChatMessage) {
 func (m *AgentChatModel) addSystemMessage(text string) {
 	m.addMessage(ChatMessage{
 		Role:    "system",
+		Content: text,
+	})
+}
+
+// addTimingMessage adds a low-focus timing message
+func (m *AgentChatModel) addTimingMessage(text string) {
+	m.addMessage(ChatMessage{
+		Role:    "timing",
 		Content: text,
 	})
 }
@@ -540,7 +826,40 @@ func (m *AgentChatModel) updateViewport() {
 			content.WriteString(m.renderAssistantMessage(msg.Content))
 		case "system":
 			content.WriteString(m.renderSystemMessage(msg.Content))
+		case "timing":
+			content.WriteString(m.renderTimingMessage(msg.Content))
 		}
+		content.WriteString("\n\n")
+	}
+	
+	m.viewport.SetContent(content.String())
+	m.viewport.GotoBottom()
+}
+
+// updateStreamingViewport refreshes the chat display with streaming content
+func (m *AgentChatModel) updateStreamingViewport() {
+	var content strings.Builder
+	
+	// Render all existing messages
+	for _, msg := range m.messages {
+		switch msg.Role {
+		case "user":
+			content.WriteString(m.renderUserMessage(msg.Content))
+		case "assistant":
+			content.WriteString(m.renderAssistantMessage(msg.Content))
+		case "system":
+			content.WriteString(m.renderSystemMessage(msg.Content))
+		case "timing":
+			content.WriteString(m.renderTimingMessage(msg.Content))
+		}
+		content.WriteString("\n\n")
+	}
+	
+	// Add streaming content if we're currently streaming
+	if m.streamingActive {
+		// Show streaming even if no tokens yet
+		streamingResponse := m.streamingContent.String() + "▊" // Typing cursor
+		content.WriteString(m.renderStreamingAssistantMessage(streamingResponse))
 		content.WriteString("\n\n")
 	}
 	
@@ -595,21 +914,40 @@ func (m *AgentChatModel) updateSizes() {
 		return
 	}
 	
-	// Reserve space for header, footer, and context bar
-	availableHeight := m.height - 8
-	availableWidth := m.width - 4
+	// Reserve space for header (3), input area (6), footer (2), and padding
+	headerHeight := 3
+	inputAreaHeight := 6  // Input box with border + separator + margin
+	footerHeight := 2
+	padding := 2
 	
-	// Viewport takes most of the space
-	viewportHeight := availableHeight - 5
-	if viewportHeight < 10 {
-		viewportHeight = 10
+	availableHeight := m.height - headerHeight - inputAreaHeight - footerHeight - padding
+	availableWidth := m.width - 2 // Less padding for full width usage
+	
+	// Ensure minimum viewport height
+	viewportHeight := availableHeight
+	if viewportHeight < 6 {
+		viewportHeight = 6
 	}
 	
-	m.viewport.Width = availableWidth
-	m.viewport.Height = viewportHeight
+	// Account for chat view border (border adds 4 to height: 2 top + 2 bottom)
+	chatViewInnerHeight := viewportHeight - 4
+	if chatViewInnerHeight < 4 {
+		chatViewInnerHeight = 4
+	}
 	
-	// Textarea gets remaining space
-	m.textarea.SetWidth(availableWidth)
+	// Account for chat view border (border adds 4 to width: 2 left + 2 right) 
+	chatViewInnerWidth := availableWidth - 4
+	if chatViewInnerWidth < 20 {
+		chatViewInnerWidth = 20
+	}
+	
+	// Set viewport size for chat history (inner content)
+	m.viewport.Width = chatViewInnerWidth
+	m.viewport.Height = chatViewInnerHeight
+	
+	// Set textarea size for input (accounts for input border)
+	m.textarea.SetWidth(availableWidth - 4) // Account for border padding
+	m.textarea.SetHeight(3) // Fixed height for input
 	
 	// Agent list sizing
 	if m.showAgentList {
@@ -617,7 +955,7 @@ func (m *AgentChatModel) updateSizes() {
 		if listWidth < 30 {
 			listWidth = 30
 		}
-		m.agentList.SetSize(listWidth, viewportHeight)
+		m.agentList.SetSize(listWidth, chatViewInnerHeight)
 	}
 }
 
@@ -723,14 +1061,20 @@ func (m *AgentChatModel) renderContextUsage() string {
 		percentage)
 }
 
-// renderChatView shows the main chat interface
+// renderChatView shows the main chat interface with border
 func (m *AgentChatModel) renderChatView() string {
-	return m.viewport.View()
+	chatStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#626262")).
+		Padding(1, 2)
+	
+	return chatStyle.Render(m.viewport.View())
 }
 
 // renderWithAgentList shows chat with agent selection sidebar
 func (m *AgentChatModel) renderWithAgentList() string {
-	chatView := m.viewport.View()
+	// Get the chat view with proper styling
+	chatView := m.renderChatView()
 	agentListView := m.agentList.View()
 	
 	return lipgloss.JoinHorizontal(
@@ -740,14 +1084,27 @@ func (m *AgentChatModel) renderWithAgentList() string {
 	)
 }
 
-// renderInputArea shows the text input
+// renderInputArea shows the text input with clear separation
 func (m *AgentChatModel) renderInputArea() string {
+	// Create a separator line above the input
+	separatorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		Bold(true)
+	
+	separator := separatorStyle.Render(strings.Repeat("─", m.width-2))
+	
+	// Style the input area
 	inputStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#874BFD")).
-		Padding(0, 1)
+		Padding(0, 1).
+		MarginTop(1)
 	
-	return inputStyle.Render(m.textarea.View())
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		separator,
+		inputStyle.Render(m.textarea.View()),
+	)
 }
 
 // renderFooter shows help hints
@@ -810,6 +1167,31 @@ func (m *AgentChatModel) renderAssistantMessage(content string) string {
 	return header + "\n" + contentStyle.Render(content)
 }
 
+// renderStreamingAssistantMessage styles streaming assistant messages with typing indicator
+func (m *AgentChatModel) renderStreamingAssistantMessage(content string) string {
+	assistantStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#50C878")).
+		Bold(true).
+		MarginBottom(1)
+	
+	agentName := "Assistant"
+	if m.streamingAgent != nil {
+		agentName = m.streamingAgent.Metadata.Name
+	} else if m.currentAgent != nil {
+		agentName = m.currentAgent.Metadata.Name
+	}
+	
+	timestamp := time.Now().Format("15:04")
+	// Add typing indicator to header
+	header := assistantStyle.Render(fmt.Sprintf("🤖 %s (%s) ⏳", agentName, timestamp))
+	
+	contentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FAFAFA")).
+		PaddingLeft(3)
+	
+	return header + "\n" + contentStyle.Render(content)
+}
+
 // renderSystemMessage styles system notifications
 func (m *AgentChatModel) renderSystemMessage(content string) string {
 	systemStyle := lipgloss.NewStyle().
@@ -818,4 +1200,15 @@ func (m *AgentChatModel) renderSystemMessage(content string) string {
 		PaddingLeft(1)
 	
 	return systemStyle.Render("ℹ " + content)
+}
+
+// renderTimingMessage styles timing information with low focus
+func (m *AgentChatModel) renderTimingMessage(content string) string {
+	timingStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#444444")).
+		Italic(true).
+		Align(lipgloss.Right).
+		Width(m.viewport.Width)
+	
+	return timingStyle.Render("⏱️ " + content)
 }

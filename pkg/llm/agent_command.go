@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"time"
 
 	"github.com/opentdf/otdfctl/pkg/config"
 )
@@ -72,6 +73,90 @@ func (acc *AgentChatCommand) RunAgentChat(ctx context.Context, modelPath string,
 		return fmt.Errorf("chat interface error: %w", err)
 	}
 	
+	return nil
+}
+
+// RunAgentChatV2 starts the agent-based chat interface using the new V2 engine architecture
+func (acc *AgentChatCommand) RunAgentChatV2(ctx context.Context, modelPath string, agentDirectory string) error {
+	// Resolve model path
+	if modelPath == "" {
+		pathResolver := NewModelPathResolver(acc.config)
+		resolvedPath, err := pathResolver.ResolveChatModelPath("")
+		if err != nil {
+			return fmt.Errorf("model path required: %w", err)
+		}
+		modelPath = resolvedPath
+	}
+	
+	// Create and start the V2 engine
+	engine := NewLLMEngineV2(acc.config)
+	if err := engine.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start LLM engine V2: %w", err)
+	}
+	defer engine.Stop()
+	
+	// Create engine client
+	engineClient := NewEngineClient(engine)
+	defer engineClient.Close()
+	
+	// Load the model
+	loadPayload := LoadModelPayload{
+		ModelPath:        modelPath,
+		SystemPrompt:     "You are a helpful assistant.", // Default prompt, will be overridden per agent
+		ContextSize:      4096,
+		EnableRAG:        false, // Can be enabled per request
+		GenerationParams: DefaultGenerationParams(),
+	}
+	
+	loadCtx, loadCancel := context.WithTimeout(ctx, 30*time.Second)
+	err := engineClient.LoadModel(loadCtx, loadPayload)
+	loadCancel()
+	
+	if err != nil {
+		log.Printf("Warning: Failed to load model: %v", err)
+		log.Printf("Continuing anyway - engine will handle model loading errors gracefully")
+	} else {
+		log.Printf("Model loaded successfully: %s", modelPath)
+	}
+	
+	// Set default agent directory if not provided
+	if agentDirectory == "" {
+		agentDirectory = filepath.Join("pkg", "llm", "agents")
+	}
+	
+	// Initialize agent manager
+	acc.agentManager = NewAgentManager(agentDirectory, acc.config)
+	if err := acc.agentManager.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize agent manager: %w", err)
+	}
+	
+	// Check if we have agents loaded
+	agents := acc.agentManager.ListAgents()
+	if len(agents) == 0 {
+		log.Printf("Warning: No agents found in directory: %s", agentDirectory)
+	} else {
+		log.Printf("Loaded %d agents from %s", len(agents), agentDirectory)
+		for _, agent := range agents {
+			log.Printf("  - %s (%s): %s", agent.Metadata.Name, agent.Type, agent.Metadata.Description)
+		}
+	}
+	
+	// Display startup information
+	log.Printf("🚀 Starting OpenTDF Agent Chat V2...")
+	log.Printf("📁 Agent Directory: %s", agentDirectory)
+	log.Printf("🤖 Model: %s", modelPath)
+	log.Printf("🔧 Engine: V2 (Decoupled Architecture)")
+	
+	// Create V2 chat interface
+	chatInterface := NewSimpleChatInterfaceV2(acc.agentManager, engineClient, acc.config)
+	
+	// Run the V2 interface
+	err = chatInterface.Run()
+	if err != nil {
+		return fmt.Errorf("chat interface V2 error: %w", err)
+	}
+	
+	log.Printf("👋 Thanks for using OpenTDF Agent Chat V2!")
 	return nil
 }
 
@@ -152,13 +237,13 @@ func (acc *AgentChatCommand) RunAgentChatWithOptions(ctx context.Context, opts A
 		log.Printf("📚 RAG: Enabled")
 	}
 	
-	// Create simple chat interface
-	chatInterface := NewSimpleChatInterface(acc.agentManager, acc.chatEngine, acc.config)
+	// Create enhanced Bubbletea TUI interface
+	tuiModel := NewAgentChatModel(acc.agentManager, acc.chatEngine)
 	
-	// Run the simple interface
-	err := chatInterface.Run()
+	// Run the enhanced TUI
+	err := RunAgentChatTUI(tuiModel)
 	if err != nil {
-		return fmt.Errorf("chat interface error: %w", err)
+		return fmt.Errorf("TUI interface error: %w", err)
 	}
 	
 	log.Printf("👋 Thanks for using OpenTDF Agent Chat!")
