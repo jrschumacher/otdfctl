@@ -1,0 +1,97 @@
+{
+  "name": "Quality Regression Test Suite",
+  "version": "1.0.0", 
+  "description": "Test cases to detect quality regressions in OpenTDF assistant responses",
+  "test_cases": [
+    {
+      "id": "general_001",
+      "query": "What is OpenTDF and how does it work?",
+      "expected_agent": "general",
+      "category": "concepts",
+      "min_length": 300,
+      "must_include": ["tdf", "encryption", "attribute", "policy"],
+      "expected_keywords": ["data", "security", "access control", "format"]
+    },
+    {
+      "id": "policy_001", 
+      "query": "How do I create an attribute namespace?",
+      "expected_agent": "policy",
+      "category": "policy_design",
+      "min_length": 250,
+      "must_include": ["namespace", "otdfctl", "create"],
+      "expected_keywords": ["policy", "attribute", "command", "example"]
+    },
+    {
+      "id": "policy_002",
+      "query": "What is ABAC and how does it relate to OpenTDF?",
+      "expected_agent": "policy", 
+      "category": "concepts",
+      "min_length": 400,
+      "must_include": ["abac", "attribute", "access control"],
+      "expected_keywords": ["policy", "subject", "resource", "decision"]
+    },
+    {
+      "id": "dev_001",
+      "query": "Show me Java code to encrypt a file with OpenTDF",
+      "expected_agent": "development",
+      "category": "code_example",
+      "min_length": 200,
+      "must_include": ["java", "encrypt", "```"],
+      "expected_keywords": ["sdk", "client", "example", "code"]
+    },
+    {
+      "id": "dev_002",
+      "query": "How do I integrate the Go SDK into my application?",
+      "expected_agent": "development",
+      "category": "integration",
+      "min_length": 300,
+      "must_include": ["go", "sdk", "integration"],
+      "expected_keywords": ["import", "client", "example", "setup"]
+    },
+    {
+      "id": "deploy_001",
+      "query": "How do I deploy OpenTDF platform with Docker?",
+      "expected_agent": "deployment",
+      "category": "deployment",
+      "min_length": 250,
+      "must_include": ["docker", "deploy", "platform"],
+      "expected_keywords": ["compose", "container", "setup", "configuration"]
+    },
+    {
+      "id": "deploy_002",
+      "query": "What are the system requirements for OpenTDF?",
+      "expected_agent": "deployment",
+      "category": "requirements",
+      "min_length": 200,
+      "must_include": ["requirements", "system"],
+      "expected_keywords": ["memory", "cpu", "storage", "network"]
+    },
+    {
+      "id": "agent_routing_001",
+      "query": "Can you route to different agents?",
+      "expected_agent": "general",
+      "category": "meta",
+      "min_length": 200,
+      "must_include": ["agent", "route"],
+      "expected_keywords": ["specialist", "policy", "development", "deployment"]
+    },
+    {
+      "id": "complex_001",
+      "query": "I need to implement a secure document sharing system with OpenTDF. What should I consider?",
+      "expected_agent": "general",
+      "category": "architecture",
+      "min_length": 500,
+      "must_include": ["secure", "document", "consider"],
+      "expected_keywords": ["architecture", "policy", "encryption", "access", "workflow"]
+    },
+    {
+      "id": "troubleshooting_001",
+      "query": "My TDF encryption is failing with permission errors",
+      "expected_agent": "development",
+      "category": "troubleshooting", 
+      "min_length": 300,
+      "must_include": ["permission", "error", "troubleshoot"],
+      "expected_keywords": ["debug", "solution", "check", "verify"]
+    }
+  ]
+}
