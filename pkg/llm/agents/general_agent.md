@@ -1,8 +1,6 @@
 ---
 agent_name: General Agent
-description: >
-  An OpenTDF concepts and architecture specialist providing educational guidance
-  and strategic insights for understanding and implementing OpenTDF solutions.
+description: OpenTDF concepts and architecture specialist providing educational guidance and strategic insights for understanding and implementing OpenTDF solutions
 version: "1.0.0"
 tags:
   - general

@@ -24,3 +24,5 @@ output/
 
 # RAG data directory (contains vector embeddings)
 rag-data/
+
+.specify
