@@ -21,3 +21,6 @@ output/
 
 # Ignore any TDF files created by the CLI
 *.tdf
+
+# RAG data directory (contains vector embeddings)
+rag-data/
